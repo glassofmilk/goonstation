@@ -9,8 +9,6 @@
 	req_access = list(access_heads) //Only used for record deletion right now.
 	object_flags = CAN_REPROGRAM_ACCESS
 	machine_registry_idx = MACHINES_CLONINGCONSOLES
-	var/obj/machinery/clone_scanner/scanner = null //Linked scanner. For scanning.
-	var/obj/machinery/clonepod/pod1 = null //Linked cloning pod.
 	var/temp = "Initializing System..."
 	var/menu = 1 //Which menu screen to display
 	var/list/records = list()
@@ -24,15 +22,22 @@
 	var/allow_mind_erasure = 0 // Can you erase minds?
 	var/mindwipe = 0 //Is mind wiping active?
 
+	var/net_id = null
+	var/frequency = 1151
+	var/datum/radio_frequency/frequency_connection
+	var/radio_range = 4
+	var/scanner_id = null
+	var/pod_id = null
+	var/pod_gen_analysis = 0
+
+	var/datum/bioEffect/BE = null // Any bioeffects to add upon cloning (used with the geneclone module)
+
 	lr = 1
 	lg = 0.6
 	lb = 1
 
 	disposing()
-		scanner?.connected = null
-		pod1?.connected = null
-		scanner = null
-		pod1 = null
+		radio_controller.remove_object(src, "[frequency]")
 		diskette = null
 		records = null
 		..()
@@ -72,24 +77,30 @@
 
 /obj/machinery/computer/cloning/New()
 	..()
-	SPAWN_DBG(0.5 SECONDS)
+	SPAWN_DBG(1 SECONDS)
+		if (radio_controller)
+			frequency_connection = radio_controller.add_object(src, "[frequency]")
+		if (!src.net_id)
+			src.net_id = generate_net_id(src)
+
+		//TODO: send a ping
+
 		if(portable) return
-		src.scanner = locate(/obj/machinery/clone_scanner, orange(2,src))
-		src.pod1 = locate(/obj/machinery/clonepod, orange(4,src))
+		//TODO: Figure out how to make the portable version work
 
-		src.temp = ""
-		if (isnull(src.scanner))
-			src.temp += " <font color=red>SCNR-ERROR</font>"
-		if (isnull(src.pod1))
-			src.temp += " <font color=red>POD1-ERROR</font>"
-		else
-			src.pod1.connected = src
-			src.scanner.connected = src
+		// src.scanner = locate(/obj/machinery/clone_scanner, orange(2,src))
+		// src.pod1 = locate(/obj/machinery/clonepod, orange(4,src))
 
-		if (src.temp == "")
+		// src.temp = ""
+		// if (isnull(src.scanner))
+		// 	src.temp += " <font color=red>SCNR-ERROR</font>"
+		// if (isnull(src.pod1))
+		// 	src.temp += " <font color=red>POD1-ERROR</font>"
+		// else
+		// 	src.pod1.connected = src
+
+		// if (src.temp == "")
 			src.temp = "System ready."
-		return
-	return
 
 /obj/machinery/computer/cloning/attackby(obj/item/W as obj, mob/user as mob)
 	if (wagesystem.clones_for_cash && istype(W, /obj/item/spacecash))
@@ -108,14 +119,21 @@
 			src.updateUsrDialog()
 			return
 
-	else if (isscrewingtool(W) && ((src.status & BROKEN) || !src.pod1 || !src.scanner || src.allow_dead_scanning || src.allow_mind_erasure || src.pod1.BE))
+	else if (isscrewingtool(W))
 		playsound(src.loc, "sound/items/Screwdriver.ogg", 50, 1)
 		if(do_after(user, 20))
-			boutput(user, "<span class='notice'>The broken glass falls out.</span>")
+			var/broken = 0
+			if (src.status && BROKEN)
+				boutput(user, "<span class='notice'>The broken glass falls out.</span>")
+				var/obj/item/raw_material/shard/glass/G = unpool(/obj/item/raw_material/shard/glass)
+				G.set_loc(src.loc)
+				broken = 1
+			else
+				boutput(user, "<span class='notice'>You disconnect the monitor.</span>")
+
 			var/obj/computerframe/A = new /obj/computerframe( src.loc )
-			if(src.material) A.setMaterial(src.material)
-			var/obj/item/raw_material/shard/glass/G = unpool(/obj/item/raw_material/shard/glass)
-			G.set_loc(src.loc)
+			if(src.material)
+				A.setMaterial(src.material)
 			var/obj/item/circuitboard/cloning/M = new /obj/item/circuitboard/cloning( A )
 			for (var/obj/C in src)
 				C.set_loc(src.loc)
@@ -126,12 +144,13 @@
 			if(src.allow_mind_erasure)
 				new /obj/item/cloneModule/minderaser(src.loc)
 				src.allow_mind_erasure = 0
-			if(src.pod1 && src.pod1.BE)
-				new /obj/item/cloneModule/genepowermodule(src.loc)
-				src.pod1.BE = null
+			if(src.BE)
+				var/obj/item/cloneModule/genepowermodule/GPM = new /obj/item/cloneModule/genepowermodule(src.loc)
+				GPM.BE = src.BE
+				src.BE = null
 			A.circuit = M
-			A.state = 3
-			A.icon_state = "3"
+			A.state = broken ? 3 : 4
+			A.icon_state = broken ? "3" : "4"
 			A.anchored = 1
 			qdel(src)
 
@@ -160,10 +179,10 @@
 		if(module.BE == null)
 			boutput(user, "<span class='alert'>You need to put an injector into the module before it will work!</span>")
 			return
-		if(pod1.BE)
+		if(src.BE)
 			boutput(user,"<span class='alert'>There is already a gene module in this upgrade spot! You can remove it by blowing up the genetics computer and building a new one. Or you could just use a screwdriver, I guess.</span>")
 			return
-		src.pod1.BE = module.BE
+		src.BE = module.BE
 		user.drop_item()
 		user.visible_message("[user] installs [module] into [src].", "You install [module] into [src].")
 		logTheThing("combat", src, user, "[user] has added clone module ([W] - [module.BE]) to ([src]) at [log_loc(user)].")
@@ -185,7 +204,8 @@
 		return
 
 	var/dat = {"<h3>Cloning System Control</h3>
-	<font size=-1><a href='byond://?src=\ref[src];refresh=1'>Refresh</a></font>
+	<font size=-1><a href='byond://?src=\ref[src];refresh=1'>Refresh</a> <a href='byond://?src=\ref[src];sync=1'>Device sync</a><br></font>
+	[!src.scanner_id ? "<font color=red>SCNR-ERROR </font>" : ""][!src.pod_id ? "<font color=red>POD1-ERROR</font>" : ""]
 	<br><tt>[temp]</tt><br><hr>"}
 
 	switch(src.menu)
@@ -204,14 +224,14 @@
 
 			dat += {"<h4>Cloning Pod Functions</h4>
 					<a href='byond://?src=\ref[src];menu=5'>Genetic Analysis Mode</a><br>
-					Status: <B>[pod1 && pod1.gen_analysis ? "Enabled" : "Disabled"]</B>
+					Status: <B>[gen_analysis ? "Enabled" : "Disabled"]</B>
 					<h4>Database Functions</h4>
 					<a href='byond://?src=\ref[src];menu=2'>View Records</a><br>"}
 			if (src.diskette)
 				dat += {"<a href='byond://?src=\ref[src];disk=load'>Load from disk</a><br>
 				<a href='byond://?src=\ref[src];disk=eject'>Eject disk</a><br>"}
 
-			if (pod1 && pod1.BE)
+			if (src.BE)
 				dat += "<br><b>Gene power module active</b><br>"
 
 			if(src.allow_mind_erasure)
@@ -403,6 +423,11 @@
 		logTheThing("combat", usr, null, "toggles advanced genetic analysis [pod1.gen_analysis ? "on" : "off"] at [log_loc(src)].")
 	else if (href_list["set_mindwipe"])
 		pod1.mindwipe = text2num(href_list["set_mindwipe"])
+	else if (href_list["sync"])
+		src.scanner_id = null
+		src.pod_id = null
+		src.pod_gen_analysis = 0
+		src.post_signal("ping")
 
 	src.updateUsrDialog()
 	return
@@ -553,6 +578,54 @@
 		JOB_XP(usr, "Medical Doctor", 15)
 		src.menu = 1
 
+/obj/machinery/computer/cloning/proc/post_signal(var/target_id, var/key1, var/value1, var/key2, var/value2, var/key3, var/value3)
+	if (!target_id) return
+
+	var/datum/signal/signal = get_free_signal()
+	signal.source = src
+	signal.transmission_method = TRANSMISSION_RADIO
+	signal.data["address_1"] = target_id
+	signal.data["sender"] = src.net_id
+	signal.data[key1] = value1
+	if (key2)
+		signal.data[key2] = value2
+	if (key3)
+		signal.data[key3] = value3
+
+	src.frequency_connection.post_signal(src, signal, radio_range)
+
+/obj/machinery/computer/cloning/receive_signal(datum/signal/signal)
+	if (!signal || signal.encryption || !signal.data["sender"]) return
+	var/target = signal.data["sender"]
+
+	if (signal.data["command"] && signal.data["command"] == "status_update")
+		if (target == src.pod_id)
+			if (signal.data["message"]) src.temp = signal.data["message"]
+			if (signal.data["gen_analysis"]) src.gen_analysis = signal.data["gen_analysis"]
+			src.updateUsrDialog()
+			return
+		else if (target == src.scanner_id)
+			if (signal.data["message"]) src.temp = signal.data["message"]
+			src.updateUsrDialog()
+			return
+
+	if (lowertext(signal.data["address_1"]) != src.net_id)
+		if (lowertext(signal.data["address_1"]) == "ping")
+			src.post_signal(target, "command", "ping_reply", "device", "CLN_CONSOLE", "netid", src.net_id)
+			return
+
+	if (!signal.data["command"]) return
+	switch (lowertext(signal.data["command"]))
+		if ("ping_reply")
+			if (!src.pod_id && signal.data["device"] == "CLN_POD")
+				src.pod_id = signal.data["netid"]
+				src.post_signal(src.pod_id, "command", "status")
+				src.updateUsrDialog()
+			else if (!src.scanner_id && signal.data["device"] == "CLN_SCANNER")
+				src.scanner_id = signal.data["netid"]
+				src.post_signal(src.scanner_id, "command", "status")
+				src.updateUsrDialog()
+
 /obj/machinery/computer/cloning/power_change()
 
 	if(status & BROKEN)
@@ -612,8 +685,6 @@
 	var/auto_strip = 1
 	// Check if the target is a living human before mincing
 	var/mince_safety = 1
-	// How far away to find clone pods
-	var/pod_range = 4
 	// What we are working on at the moment
 	var/active_process = PROCESS_IDLE
 	// If we should start the mincer after the stripper (lol)
@@ -623,12 +694,32 @@
 	// If upgraded or not
 	var/upgraded = 0
 
+	var/net_id = null
+	var/frequency = 1151
+	var/datum/radio_frequency/frequency_connection
+	var/radio_range = 4
+
 	allow_drop()
 		return 0
 
 	New()
 		..()
 		src.create_reagents(100)
+		SPAWN_DBG(0.5 SECONDS)
+			if (radio_controller)
+				frequency_connection = radio_controller.add_object(src, "[frequency]")
+			if (!src.net_id)
+				src.net_id = generate_net_id(src)
+
+	receive_signal(datum/signal/signal)
+		if (!signal || signal.encryption || !signal.data["sender"]) return
+		var/target = signal.data["sender"]
+
+		if (lowertext(signal.data["address_1"]) != src.net_id)
+			if (lowertext(signal.data["address_1"]) == "ping")
+				src.post_signal(target, "command", "ping_reply", "device", "CLN_SCANNER", "netid", src.net_id)
+			return
+
 
 	relaymove(mob/user as mob, dir)
 		eject_occupant(user)
@@ -771,21 +862,6 @@
 		if (air_group || (height==0))
 			return 1
 		..()
-
-	// Meat grinder functionality.
-	proc/find_pods()
-		if (!islist(src.pods))
-			src.pods = list()
-		if (!isnull(src.id) && genResearch && islist(genResearch.clonepods) && genResearch.clonepods.len)
-			for (var/obj/machinery/clonepod/pod in genResearch.clonepods)
-				if (pod.id == src.id && !src.pods.Find(pod))
-					src.pods += pod
-					DEBUG_MESSAGE("[src] adds pod [log_loc(pod)] (ID [src.id]) in genResearch.clonepods")
-		else
-			for (var/obj/machinery/clonepod/pod in orange(src.pod_range))
-				if (!src.pods.Find(pod))
-					src.pods += pod
-					DEBUG_MESSAGE("[src] adds pod [log_loc(pod)] in orange([src.pod_range])")
 
 	process()
 		switch(active_process)

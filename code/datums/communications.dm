@@ -2,6 +2,7 @@
 Special frequency list:
 On the map:
 1149 for PDA messaging
+1151 for cloner messaging
 1433 for hydroponics alerts
 1435 for status displays
 1437 for atmospherics/fire alerts

@@ -21,7 +21,6 @@
 	var/mob/living/occupant
 	var/heal_level = 90 //The clone is released once its health reaches this level.
 	var/locked = 0
-	var/obj/machinery/computer/cloning/connected = null //So we remember the connected clone machine.
 	var/mess = 0 //Need to clean out it if it's full of exploded clone.
 	var/attempting = 0 //One clone attempt at a time thanks
 	var/eject_wait = 0 //Don't eject them as soon as they are created fuckkk
@@ -32,7 +31,6 @@
 
 	var/cloneslave = 0 //Is a traitor enslaving the clones?
 	var/mob/implant_master = null // Who controls the clones?
-	var/datum/bioEffect/BE = null // Any bioeffects to add upon cloning (used with the geneclone module)
 	var/mindwipe = 0 // Are we wiping people's minds?
 	var/is_speedy = 0 // Speed module installed?
 	var/is_efficient = 0 // Efficiency module installed?
@@ -50,7 +48,10 @@
 	var/mailgroup2 = "medresearch"
 	var/net_id = null
 	var/pdafrequency = 1149
+	var/radiofrequency = 1151
+	var/radio_range = 4
 	var/datum/radio_frequency/pda_connection
+	var/datum/radio_frequency/radio_connection
 
 	var/datum/light/light
 
@@ -74,19 +75,47 @@
 		SPAWN_DBG(10 SECONDS)
 			if (radio_controller)
 				pda_connection = radio_controller.add_object(src, "[pdafrequency]")
+				radio_connection = radio_controller.add_object(src, "[radiofrequency]")
 			if (!src.net_id)
 				src.net_id = generate_net_id(src)
 
 	disposing()
 		radio_controller.remove_object(src, "[pdafrequency]")
+		radio_controller.remove_object(src, "[radiofrequency]")
 		genResearch.clonepods.Remove(src) //Bye bye
-		connected.pod1 = null
-		connected?.scanner?.pods -= src
-		connected = null
 		if(occupant)
 			occupant.set_loc(src.loc)
 		occupant = null
 		..()
+
+	receive_signal(datum/signal/signal)
+		if (!signal || signal.encryption || !signal.data["sender"]) return
+		var/target = signal.data["sender"]
+
+		if (lowertext(signal.data["address_1"]) != src.net_id)
+			if (lowertext(signal.data["address_1"]) == "ping")
+				var/list/signalParams = list()
+				signalParams["command"] = "ping_reply"
+				signalParams["device"] = "CLN_POD"
+				sinalParams["netid"] = src.net_id
+				src.post_signal(target, signalParams)
+			return
+
+		if (!signal.data["command"]) return
+		switch (lowertext(signal.data["command"]))
+			if ("status")
+				src.send_status_message()
+
+	proc/post_signal(var/target_id, var/list/signalParams)
+		var/datum/signal/signal = get_free_signal()
+		signal.source = src
+		signal.transmission_method = TRANSMISSION_RADIO
+		singal.data = signalParams
+		signal.data["sender"] = src.net_id
+		if (target_id)
+			signal.data["address_1"] = target_id
+
+		src.radio_connection.post_signal(src, signal, radio_range)
 
 	proc/send_pda_message(var/msg)
 		if (!msg && src.message)
@@ -161,11 +190,11 @@
 		return 0
 
 	if (src.meat_level < MEAT_NEEDED_TO_CLONE)
-		src.connected_message("Insufficient biomatter to begin.")
+		src.send_status_message("Insufficient biomatter to begin.")
 		return 0
 
 	if (ghost.mind.dnr)
-		src.connected_message("Ephemereal conscience detected, seance protocols reveal this corpse cannot be cloned.")
+		src.send_status_message("Ephemereal conscience detected, seance protocols reveal this corpse cannot be cloned.")
 		return 0
 
 	src.attempting = 1 //One at a time!!
@@ -311,14 +340,14 @@
 		if ((isdead(src.occupant)) || (src.occupant.suiciding) || abort)  //Autoeject corpses and suiciding dudes.
 			src.locked = 0
 			src.go_out()
-			src.connected_message("Clone Rejected: Deceased.")
+			src.send_status_message("Clone Rejected: Deceased.")
 			src.send_pda_message("Clone Rejected: Deceased")
 			return
 
 		else if (src.failed_tick_counter >= MAX_FAILED_CLONE_TICKS) // you been in there too long, get out
 			src.locked = 0
 			src.go_out()
-			src.connected_message("Clone Ejected: Low Biomatter.")
+			src.send_status_message("Clone Ejected: Low Biomatter.")
 			src.send_pda_message("Clone Ejected: Low Biomatter")
 			return
 
@@ -364,7 +393,7 @@
 
 			src.meat_level = max( 0, src.meat_level - meat_used_per_tick)
 			if (!src.meat_level)
-				src.connected_message("Additional biomatter required to continue.")
+				src.send_status_message("Additional biomatter required to continue.")
 				src.send_pda_message("Low Biomatter")
 				src.visible_message("<span class='alert'>[src] emits an urgent boop!</span>")
 				playsound(src.loc, "sound/machines/buzz-two.ogg", 50, 0)
@@ -379,7 +408,7 @@
 				src.failed_tick_counter = 0
 			previous_heal = src.occupant.health
 			if (heal_delta <= 0 && src.occupant.health > 50 && !eject_wait)
-				src.connected_message("Cloning Process Complete.")
+				src.send_status_message("Cloning Process Complete.")
 				src.send_pda_message("Cloning Process Complete")
 				src.locked = 0
 				src.go_out()
@@ -388,7 +417,7 @@
 			return
 
 		else if ((src.occupant.health >= src.heal_level) && (!src.eject_wait))
-			src.connected_message("Cloning Process Complete.")
+			src.send_status_message("Cloning Process Complete.")
 			src.send_pda_message("Cloning Process Complete")
 			src.locked = 0
 			src.go_out()
@@ -518,16 +547,15 @@ var/list/clonepod_accepted_reagents = list("blood"=0.5,"synthflesh"=1,"beff"=0.7
 		src.reagents.reaction(src.occupant, 1000) // why was there a 2 here? it was injecting ice cold reagents that burn people
 		src.reagents.trans_to(src.occupant, 1000)
 
-//Put messages in the connected computer's temp var for display.
-/obj/machinery/clonepod/proc/connected_message(var/msg)
-	if ((isnull(src.connected)) || (!istype(src.connected, /obj/machinery/computer/cloning)))
-		return 0
-	if (!msg)
-		return 0
+//Any clone consoles connected to us will hear this and update their status
+/obj/machinery/clonepod/proc/send_status_message(var/msg)
+	var/list/signalParams = list()
+	signalParams["command"] = "status_update"
+	signalParams["gen_analysis"] = gen_analysis
+	if (msg)
+		signalParams["message"] = msg
 
-	src.connected.temp = msg
-	src.connected.updateUsrDialog()
-	return 1
+	src.post_signal(null, signalParams)
 
 /obj/machinery/clonepod/verb/eject()
 	set src in oview(1)
@@ -581,7 +609,7 @@ var/list/clonepod_accepted_reagents = list("blood"=0.5,"synthflesh"=1,"beff"=0.7
 
 /obj/machinery/clonepod/proc/malfunction()
 	if (src.occupant)
-		src.connected_message("Critical Error!")
+		src.send_status_message("Critical Error!")
 		src.send_pda_message("Critical Error")
 		src.mess = 1
 		src.failed_tick_counter = 0
