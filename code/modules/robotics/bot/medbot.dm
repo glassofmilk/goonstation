@@ -224,6 +224,15 @@
 	src.updateUsrDialog()
 	return
 
+
+/obj/machinery/bot/medbot/Move(var/turf/NewLoc, direct)
+	..()
+	if (src.patient && (get_dist(src,src.patient) <= 1))
+		if (!src.currently_healing)
+			src.currently_healing = 1
+			src.frustration = 0
+			src.medicate_patient(src.patient)
+
 /obj/machinery/bot/medbot/emag_act(var/mob/user, var/obj/item/card/emag/E)
 	if (!src.emagged)
 		if(user)
@@ -652,6 +661,8 @@
 	return src.explode()
 
 /obj/machinery/bot/medbot/explode()
+	if(src.exploding) return
+	src.exploding = 1
 	src.on = 0
 	for(var/mob/O in hearers(src, null))
 		O.show_message("<span class='alert'><B>[src] blows apart!</B></span>", 1)
